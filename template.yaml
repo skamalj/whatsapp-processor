@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Whatsapp message processor
+
+  SAM Template for whatsapp messsage processor with SQS trigger
+
+Globals:
+  Function:
+    Timeout: 20  # Increased timeout since SQS processing may take longer
+
+Parameters:
+  WhatsAppQueue:
+    Type: String
+    Default: "whatsapp-queue"
+    Description: "Name of the secret in AWS Secrets Manager"
+
+Resources:
+  # SQS Queue
+  UnifiedChannelQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: "UnifiedChannelQueue"
+      VisibilityTimeout: 30  # Ensure timeout is greater than Lambda execution time
+      MessageRetentionPeriod: 86400  # 1 day
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt UnifiedChannelDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  # Dead Letter Queue (DLQ) for SQS
+  UnifiedChannelDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: "UnifiedChannelDeadLetterQueue"
+      MessageRetentionPeriod: 1209600  # Retain messages for 14 days
+
+  # Lambda Function
+  WhatsappProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: processor/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 512
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          UNIFIED_QUEUE_URL: !Ref UnifiedChannelQueue
+      Events:
+        SQSMessage:
+          Type: SQS
+          Properties:
+            Queue: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:{{resolve:secretsmanager:${WhatsAppQueue}}}"
+            BatchSize: 1  # Adjust based on workload (max 10)
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy: 
+            SecretArn: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${WhatsAppQueue}-*"
+        - Statement:
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt UnifiedChannelQueue.Arn
